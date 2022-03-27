@@ -1,0 +1,804 @@
+---
+title: "Tutorial marginal effects"
+author: '[Jochem Tolsma](https://www.jochemtolsma.nl) - Radboud University / University of Groningen, the Netherlands'
+date: "Last compiled on `r format(Sys.time(), '%B, %Y')`"
+output:
+  html_document:
+    toc:  true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    code_download: yes
+    theme: flatly
+    highlight: default
+    
+---
+
+
+```{r globalsettings, echo=FALSE, warning=FALSE, message=FALSE}
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff=100),tidy=TRUE, warning = FALSE, message = FALSE,comment = "#>", cache=TRUE, echo=TRUE, class.source=c("test"), class.output=c("test2"))
+options(width = 100)
+library(rgl)
+rgl::setupKnitr()
+knitr::knit_hooks$set(webgl = hook_webgl)
+```
+
+```{r colorize, echo=FALSE}
+colorize <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    sprintf("\\textcolor{%s}{%s}", color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'>%s</span>", color, 
+            x)
+  } else x
+}
+
+```
+
+```{r klippy, echo=FALSE, include=TRUE}
+klippy::klippy(position = c('top', 'right'))
+#klippy::klippy(color = 'darkred')
+#klippy::klippy(tooltip_message = 'Click to copy', tooltip_success = 'Done')
+```
+
+```{css style settings, echo = FALSE}
+.test {
+  max-height: 300px;
+  overflow-y: auto;
+  overflow-x: auto;
+  margin: 0px;
+}
+
+.test2 {
+  max-height: 300px;
+  overflow-y: auto;
+  overflow-x: auto;
+  margin: 0px;
+  #background-color: white;
+  color: rgb(201, 76, 76);
+}
+
+
+h1, .h1, h2, .h2, h3, .h3 {
+  margin-top: 24px;
+}
+
+
+
+blockquote {
+    padding: 10px 20px;
+    margin: 0 0 20px;
+    font-size: 14px;
+    border-left: 5px solid #eee;
+    background-color: rgb(255,255,224,1);
+}
+```
+
+
+
+
+---
+
+
+#  Intro
+
+
+In this tutorial I will try to explain the logic behind marginal effects.  
+
+I will provide you with practical examples. And give you some exercises. 
+
+To copy the code click the button in the upper right corner of the code-chunks.
+
+Questions can be addressed to [Jochem Tolsma](mailto:jochem.tolsma@ru.nl).
+
+---  
+
+
+
+## Custom functions
+
+- `package.check`: Check if packages are installed (and install if not) in R ([source](https://vbaliga.github.io/verify-that-r-packages-are-installed-and-loaded/)). 
+
+
+
+```{r, results='hide', echo=TRUE}
+fpackage.check <- function(packages) {
+  lapply(packages, FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE)
+      library(x, character.only = TRUE)
+    }
+  })
+}
+
+
+```
+
+---  
+
+## Packages
+
+
+- `tidyverse`: if you can't base them, join them  
+- `miniGUI`: 
+- `rgl`: plotting stuf   
+- `Deriv`: to let R calculate derivatives  
+- `margin`: an R package that will calculate margins for you  
+- `mvtnorm`: to simulate data (with correlated covariates)  
+- `boot`: to calculate SE/CI of the marginal effects
+
+```{r, results='hide', echo=TRUE}
+packages = c("tidyverse", "miniGUI", "rgl", "Deriv", "margins", "mvtnorm", "boot")
+
+fpackage.check(packages)
+
+```
+
+
+## Session info
+
+This is my setup. 
+
+```{r}
+sessionInfo()
+```
+
+--- 
+
+## Background reading and theory
+
+Ai and Norton, 2003. Interaction terms in logit and probit models : https://doi.org/10.1016/S0165-1765(03)00032-6
+
+
+### Marginal effect definition  {#defs}
+
+What is a marginal effect? If you google, you will find this definition: 
+
+> Marginal effects measure the impact that an instantaneous change in one variable has on the outcome variable while all other variables are held constant. 
+
+But I would say the definition depends on the measurement level of your independent variable. 
+
+For a dichotomous independent variable: 
+
+* `r colorize("The change in your dependent variable if (ceteris paribus) your independent variable x1 changes from 0 to 1", "red")`. 
+
+More formally: 
+
+$$ ME = f(X|x1=1) - f(X|x1=0), $$ 
+
+where $Y = f(X)$ and $X$ is your set of covariates. 
+
+For a metric independent variable:  
+
+* `r colorize("The change in your dependent variable, Y, at some value, x,  of your independent variable x1, per (ceteris paribus) small change of x1 at x of s.", "red")`
+
+More formally: 
+
+$$ ME = \frac{f(X|x1=x + s) - f(X|x1=x - s)}{2s}, $$
+where $s$ is an infinitesimal small number. 
+
+This is thus the slope (or more precisely the partial derivative) of $f(X)$ at the point where $x1$ is $x$: 
+
+$$ ME = f^{'}(X|x1=x), $$
+and $$ f^{'}(X)  = \displaystyle \frac{\partial f(X)}{\partial x1} $$
+
+
+Where $X$ is your set of covariates, $x1$ is one of your covariates, $x$ is a value of your covariate $x1$. 
+
+
+### Average Marginal Effect / Marginal Effect at Mean
+
+Because you can calculate the ME at different values of your covariates, you can calculate many MEs. 
+
+If you calculate the ME for all respondents in your dataset (and their observed values of covariates) and take the mean, you will end up with the **AME**, the Average Marginal Effect.  
+If you calculate the ME for covariate values set at their mean, you will end up with the **MEM**, the Marginal Effect at Mean (or MME, Mean Marginal Effect). 
+
+### Marginal interaction effect
+
+Sometimes this is incorrectly defined as:
+
+$$ \displaystyle \frac{\partial f(X)}{\partial (x1x2)} $$
+Correctly would be:
+
+$$ \displaystyle \frac{\partial f^2(X)}{\partial(x1)\partial(x2)} $$
+
+Interpretation: How does the effect of $x1$ on $Y$ change with a change in $x2$, conditional on $X$. 
+
+Naturally, you have analogous definitions if $x1$ and/or $x2$ are dichotomous. 
+
+---  
+
+
+
+## Simulated data  
+
+```{r}
+set.seed(227863) # so we all have the same data
+
+# we start with simulating some correlated covariates
+sigma <- matrix(c(4,2,3, 2,3,1.5, 3,1.5,5), ncol=3)
+#sigma
+df <- data.frame(rmvnorm(n=500, mean=c(6,8,7), sigma=sigma))
+colnames(df) <- c("age", "sex", "educ")
+
+df %>% 
+  mutate(sex = ifelse(sex > mean(sex) + 0.3*sd(sex), 0,1), 
+         sex = as.factor(sex),
+         sex = recode_factor(sex, '0'="men", '1'="women"), 
+         age = round(age, 2), 
+         educ = round(educ, 2)) -> df
+
+# Let us add a linear dependent variable with the following formula
+df %>% 
+  mutate(y_lin = 10 + 5*as.numeric(sex) + 2.4*age + 2*educ + 0.5*as.numeric(sex)*educ + -0.2*age*educ + rnorm(500, 0, .5)) -> df
+
+head(df)
+
+```
+<br>
+
+This was hopefully, all quite straightforward. But let us also simulate a dichotomous dependent variable. 
+
+
+Thus we would like to simulate a dichotomous dependent variable (0/1), from a Bernoulli distribution, with a logit link function. So we can illustrate marginal effects with logistic regression model. 
+
+The log-odds of the probability of an event is a linear combination of the independent variables
+
+Please remember, the logistic function is:  
+
+$$ f(X) = P(Y=1|X) = n(X) = \pi_x = \frac{e^X}{(1 + e^X)}  = \frac{1} {(1+e^{-X})} $$
+
+
+We can easily calculate $P(Y=1|X)$ in R if we know $X$: `plogis(X)`.  
+
+<!--- 
+do i need this:  apply the link function (inverse logistic function / logit / in R: qlogis(pi_x)): ln(pi_x / 1 - pi_x) = X
+---> 
+
+And if we have $P(Y=1|X)$ we can simulate an observed variable according to a binomial distribution: 
+
+$$Y_{di} \sim {\sf Binom}(1, P(Y=1|X))$$
+
+```{r}
+
+df %>%
+  mutate(y_di = rbinom(n=500, size=1, prob=plogis(-2.4 + .3*as.numeric(sex) + .4*age + .3*educ + .1*as.numeric(sex)*educ + -0.1*age*educ))) -> df
+
+table(df$sex, df$y_di)
+head(df)
+```
+
+---  
+
+
+# Linear model
+
+Estimate the model  
+
+```{r }
+
+m1 <- lm(y_lin ~ sex + age + educ, data=df)
+summary(m1)
+
+```
+
+<br>
+And plot the model.
+```{r , webgl=TRUE}
+
+colors <- ifelse(df$sex=="men", "red", "blue")
+
+with(df, plot3d(educ, age, predict(m1), col=colors))
+```
+
+
+## Marginal effects of age. 
+
+We know that $Y = intercept + b_sex*sex + b_age*age + b_educ*educ$. 
+We know that age is a continuous variable. 
+Thus we calculate the derivative (no worries we will use the function `D`) of Y with respect to age. 
+
+```{r}
+ME_age <- D(expression(intercept + b_sex*sex + b_age*age + b_educ*educ), "age") 
+ME_age
+```
+Find the value of this coefficient: 
+
+```{r}
+
+#coef(m1)
+b_intercept <- coef(m1)[1]
+b_sex <- coef(m1)[2]
+b_age <- coef(m1)[3]
+b_educ <- coef(m1)[4]
+b_age
+```
+<br> 
+
+> Exercise: Calculate the average marginal effect for age by using the numerical approach to calculate the derivative
+
+
+<!--- include a button here ---> 
+
+```{r}
+s <- .01 #define a small step
+
+dfmin <- dfplus <- df #let us copy the datasets
+dfplus$age <- df$age + s #we add a small step to age in one of the datasets
+dfmin$age <- df$age - s #we substract a small step to age in one of the datasets
+
+ysplus <- predict(m1, newdata=dfplus) #we calculate the predicted values based on our model parameters and new values of covariates
+ysmin <- predict(m1, newdata=dfmin) #we calculate the predicted values based on our model parameters and new values of covariates
+
+ME_age <- (ysplus - ysmin) / (2*s) #calculate the MEs
+
+AME_age <- mean(ME_age) #calculate the AME
+
+AME_age
+```
+
+## Marginal effects of sex.
+
+Remember the definition? 
+
+```{r}
+ME_sex <- with(df, (b_intercept + b_sex*1 + b_age*age + b_educ*educ) - (b_intercept + b_sex*0 + b_age*age + b_educ*educ))
+ME_sex
+```
+<br> 
+So, lets calculate the AME: `mean(ME_sex)` = `r mean(ME_sex)`. 
+
+And what is the interpretation? Well, let us plot the values of the dependent variable, if we hold education constant and vary age, for `r colorize("men", "red")` and `r colorize("women", "blue")`. 
+
+```{r}
+plot(c(-10:10), b_intercept + b_sex*1 + b_age*c(-10:10) + b_educ*mean(df$educ), col="red", type= "b", xlab="age", ylab="y_lin", xlim=c(-10,10), ylim=c(0, 60))
+par(new=TRUE)
+plot(c(-10:10), b_intercept + b_sex*0 + b_age*c(-10:10) + b_educ*mean(df$educ), col="blue", type= "b", xlab="", ylab="", xlim=c(-10,10), ylim=c(0, 60))
+
+```
+<br> 
+
+You see, that at all values of age, the difference between `r colorize("men", "red")` and `r colorize("women", "blue")` is AME.  
+
+## check with R
+
+```{r}
+summary(margins(m1)) #SE via deltamethod
+summary(margins(m1, vce="bootstrap", iterations=999)) #SE via bootstrapping
+```
+
+---  
+
+# Logistic model
+
+```{r}
+m1_d <- glm(y_di ~ sex + age + educ, data=df, family=binomial)
+summary(m1_d)
+```
+<br>
+
+Let us have a look at the model: 
+
+```{r, webgl=TRUE}
+
+#with(df, plot3d(sex, age, fitted.values(m1_d), col=colors))
+with(df, plot3d(educ, age, fitted.values(m1_d), col=colors))
+```
+
+
+## Marginal effects of age  
+
+Please remember, the logistic function is:  
+
+$$ f(X) =  \frac{1} {(1+e^{-X})} $$
+
+
+And the definition of the ME for a continuous variable $x1$: 
+
+
+$$ ME = f^{'}(X|x1=x), $$
+
+Thus we need to find $f^{'}(X)$ with respect to $x1$ (i.e., age). 
+
+You could do that yourself (use the chain-rule: $\displaystyle \frac{\partial f(X)}{\partial (x1)} = \displaystyle \frac{\partial f(X)}{\partial (X)}*\displaystyle \frac{\partial (X)}{\partial (x1)}$) or let R help you. 
+
+```{r}
+ME_age_f2 <- D(expression(1 / (1 + exp(-1*(b_intercept + b_sex*sex + b_age*age + b_educ*educ)))), "age") 
+ME_age_f2
+
+```
+<br>
+
+Luckily for us, the derivative of `plogis(X)` is `dlogis(X)`. 
+
+You wanna check? simply run: `?dlogis`. 
+
+
+Retrieve the coefficients: 
+
+```{r}
+coef(m1_d)
+b_intercept <- coef(m1_d)[1]
+b_sex <- coef(m1_d)[2]
+b_age <- coef(m1_d)[3]
+b_educ <- coef(m1_d)[4]
+```
+And fill in the formula: 
+
+```{r}
+ME_age <- with(df, dlogis(b_intercept + b_sex*as.numeric(sex)+ b_age*age + b_educ*educ)*b_age)
+head(ME_age)
+AME_age <- mean(ME_age)
+
+```
+So, you notice - hopefully - that that the ME_age is different for each respondent. Let us take the mean. 
+
+
+**AME_age** = `r mean(ME_age)`. 
+
+
+## marginal effect sex. 
+
+Remember $ME_{sex} = f(X|sex=1) - f(X|sex=0)$. 
+
+And once again simply fill in the formula. 
+
+```{r}
+
+ME_sex <- with(df, plogis(b_intercept + b_sex*1+ b_age*age + b_educ*educ) - plogis(b_intercept + b_sex*0+ b_age*age + b_educ*educ))
+AME_sex <- mean(ME_sex)
+head(ME_sex)
+```
+
+Let us plot the marginal effect at different values of the other covariates. 
+
+```{r , webgl=TRUE}
+with(df, plot3d(educ, age, ME_sex, col=colors))
+```
+
+AME_sex = `r AME_sex`. 
+
+## Check with R. 
+
+```{r}
+#okay, now let's use R to calculate the marginal effects
+summary(margins(m1_d)) #make sure that variable sex is defined as a factor not as a numeric variable. 
+```
+We are very close but not spot on. I guess this is to rounding errors. Would love to know. 
+
+---   
+
+# Linear model with interactions
+
+Let us estimate a better fitting model. 
+
+```{r}
+m2 <- lm(y_lin ~ sex + age + educ + sex:educ + age:educ, data=df)
+#note that we define the interaction within the formula. This is crucial!!
+summary(m2)
+```
+
+Retrieve coefficients. 
+
+```{r}
+coef(m2)
+b_intercept <- coef(m2)[1]
+b_sex <- coef(m2)[2]
+b_age <- coef(m2)[3]
+b_educ <- coef(m2)[4]
+b_sex_educ <- coef(m2)[5]
+b_age_educ <- coef(m2)[6]
+``` 
+
+## marginal effect sex
+
+Let's use power of R. 
+
+```{r}
+newdata_sex0 <- df
+newdata_sex0$sex <- "men" #use the correct factor levels!!
+newdata_sex1 <- df
+newdata_sex1$sex <- "women" #use the correct factor levels!!
+
+ME_sex <- predict(m2, newdata=newdata_sex1) - predict(m2, newdata=newdata_sex0)
+AME_sex <- mean(ME_sex)
+AME_sex
+```
+
+
+## marginal effect age  
+
+```{r}
+ME_age_f <- expression(b_age + b_age_educ*educ)
+ME_age <- with(df, eval(ME_age_f)) #Do you see I do not fit all variables myself but use this convenient function eval()
+AME_age <- mean(ME_age)
+AME_age
+```
+
+## Marginal effect education  
+
+```{r}
+ME_educ_f <- expression(b_educ + b_age_educ*age + b_sex_educ*sex)
+ME_educ <- with(df, eval(ME_educ_f))
+#whoops we get an error. 
+df2 <- df
+df2$sex <- ifelse(df$sex=="men", 0, 1) #Please note that simply as.numeric does not work. Because we get values 1, 2 and not 0, 1. 
+ME_educ <- with(df2, eval(ME_educ_f))
+AME_educ <- mean(ME_educ)
+AME_educ
+```
+
+## Let us check with R
+
+```{r}
+summary(margins(m2))
+```
+
+
+
+## Marginal interaction effect educ*age
+
+First calculate derivative to age and then to educ. 
+
+```{r}
+
+fx <- expression(intercept + b_sex*sex + b_age*age + b_educ*educ + b_sex_educ*sex*educ + b_age_educ*age*educ)
+dfxdage <- D(fx, "age")
+d2fxdagededuc <- D(dfxdage, "educ")
+AME_age_educ <- mean(with(df2, eval(d2fxdagededuc) ))
+AME_age_educ
+```
+And this is (of course) our regression coefficient for the interaction. 
+
+## Marginal interaction effect sex*educ
+
+First calculate derivative to sex and then to educ. 
+
+```{r}
+fx <- expression(intercept + b_sex*sex + b_age*age + b_educ*educ + b_sex_educ*sex*educ + b_age_educ*age*educ)
+dfxdsex <- expression(intercept + b_sex*1 + b_age*age + b_educ*educ + b_sex_educ*1*educ + b_age_educ*age*educ -(intercept + b_sex*0 + b_age*age + b_educ*educ + b_sex_educ*0*educ + b_age_educ*age*educ))
+dfxdsex
+dfxdsex <- Simplify(dfxdsex)
+dfxdsex
+d2fxdsexdeduc <- D(dfxdsex, "educ")
+d2fxdsexdeduc
+eval(d2fxdsexdeduc)
+```
+
+---  
+
+
+# Logistic with model interactions
+
+Let's estimate a better model
+
+```{r}
+m2_d <- glm(y_di ~ sex + age + educ + sex:educ + age:educ, family=binomial, data=df)
+summary(m2_d)
+```
+Plotting the estimated model is very insightful. 
+
+```{r, results="hold", webgl=TRUE }
+with(df, plot3d(sex, age, fitted.values(m2_d), col=colors))
+#with(df, plot3d(educ, age, fitted.values(m2_d), col=colors))
+#with(df, plot3d(educ[sex=="men"], age[sex=="men"], fitted.values(m2_d)[sex=="men"], col=colors[sex=="men"]))
+#with(df, plot3d(educ[sex=="women"], age[sex=="women"], fitted.values(m2_d)[sex=="women"], col=colors[sex=="women"]))
+```
+
+Retrieve coefficients. 
+
+```{r}
+coef(m2_d)
+b_intercept <- coef(m2_d)[1]
+b_sex <- coef(m2_d)[2]
+b_age <- coef(m2_d)[3]
+b_educ <- coef(m2_d)[4]
+b_sex_educ <- coef(m2_d)[5]
+b_age_educ <- coef(m2_d)[6]
+```
+
+## marginal effect sex
+
+Let's use power of R
+
+```{r}
+ME_sex <- plogis(predict(m2_d, newdata=newdata_sex1)) - plogis(predict(m2_d, newdata=newdata_sex0))
+AME_sex <- mean(ME_sex)
+AME_sex
+```
+
+## marginal effect age  
+
+```{r}
+ME_age <- with(df, dlogis(predict(m2_d))*(b_age + b_age_educ*educ))
+AME_age <- mean(ME_age)
+AME_age
+```
+
+## marginal effect educ 
+
+```{r}
+ME_educ <- with(df2, dlogis(predict(m2_d))*(b_educ + b_sex_educ*sex + b_age_educ*age)) #see I use df2 again for sex as 0, 1
+AME_educ <- mean(ME_educ)
+AME_educ
+```
+
+## check with R
+
+```{r}
+summary(margins(m2_d))
+
+```
+
+
+## Marginal interaction effects.
+
+`r colorize("Warning, calculating the derivatives may be difficult depending on f(x), and your mathematical background ;-)", "red")`
+
+We need the double derivative of $f(x)$. 
+
+```{r}
+# f(X) = P(Y=1|X) = n(X) = exp(X) / (1 + exp(X))  = 1 / (1+exp(-X))
+nX <- expression(1 / (1+exp(-X))) 
+#similar as dlogis
+dnXdx <- D(nX, "X")
+#higher order derivative 
+d2nxdxdx <- D(dnXdx, "X")
+#d2nxdxdx
+ddlogis <- function(X){-(exp(-X)/(1 + exp(-X))^2 - exp(-X) * (2 * (exp(-X) * (1 + exp(-X))))/((1 +     exp(-X))^2)^2)}
+```
+
+## marginal interaction effect educ*age
+
+```{r}
+
+MEeducage <- with(df2, ddlogis(b_intercept + b_sex*sex+ b_age*age + b_educ*educ)*(b_educ + b_age_educ*age)*(b_age + b_age_educ * educ) + dlogis(b_intercept + b_sex*sex+ b_age*age + b_educ*educ)*(b_age_educ))
+
+AMEeducage <- mean(MEeducage)
+AMEeducage
+```
+
+<br>
+
+> Exercise: Suppose that all estimated interaction terms are 0 in model m2_d what would be the marginal effect of the interaction effect of education with age according to the above? Thus what would be: MEeducage. 
+
+## marginal interaction effect sex*educ
+
+First calculate derivative to sex and then to educ
+
+```{r}
+dfxdsex <- with(df, plogis(b_intercept + b_sex*1 + b_age*age + b_educ*educ + b_sex_educ*1*educ + b_age_educ*age*educ) - plogis(b_intercept + b_sex*0 + b_age*age + b_educ*educ + b_sex_educ*0*educ + b_age_educ*age*educ))
+
+MEsexeduc  <- with(df, dlogis(b_intercept + b_sex*1 + b_age*age + b_educ*educ + b_sex_educ*1*educ + b_age_educ*age*educ)*(b_educ + b_sex_educ*1 + b_age_educ*age) - dlogis(b_intercept + b_sex*0 + b_age*age + b_educ*educ + b_sex_educ*0*educ + b_age_educ*age*educ)*(b_educ + b_sex_educ*0 + b_age_educ*age))  
+
+AMEsexeduc <- mean(MEsexeduc)
+AMEsexeduc
+
+``` 
+
+Let us plot these interaction effects agains the fitted values. 
+
+```{r}
+plot(fitted.values(m2_d), MEsexeduc, col=colors)
+```
+
+You see that at some points the interaction is negative and at some it is positive.
+
+---  
+
+# Take home message
+
+* When you use a non-linear model, the interpretation of marginal effects is difficult.  
+* Only when you have a non-linear model, the use of marginal effects makes sense.  
+* MEM: How useful are they?  
+* The absence or presence of an estimated interaction term does not say much about the presence or absence of a (marginal) interaction effect when your link function is not linear. 
+* R does not provide marginal effects for interaction effects. 
+
+---  
+
+# SE of marginal effects. 
+
+Well, you made it this far in the tutorial. The goal was to show you the underlying idea and interpretation of marginal effects. Now, that you understand, you can apply the standard packages in R to calculate the marginal effects for you, like `margin`. 
+There is, however, one caveat. These packages are not able to calculate (correct) marginal effects of interaction effects and not all non-linear models are supported. This means you sometimes have to calculate the marginal effects yourself. Which can be a challenge but as you see, is doable. But if you calculate the ME yourself you might also want to know the standard error (SE) or confidence-interval (CI) of the marginal effect. 
+
+There are two common approaches:  
+
+- Delta method  
+- Bootstrapping  
+
+The Delta method is default in most packages but it is quite crude. 
+Bootstrapping is slow but quite easy to implement yourself. For more background reading on bootstrapping you could start here: 
+
+Davison, A.C. and Hinkley, D.V. (1997) *Bootstrap Methods and Their Application.* Cambridge University Press.
+
+
+
+## Example 1: Linear without interactions
+
+```{r}
+#we need to define a function in which we calculate our marginal effects. This is quite easy because it is simply copy paste from the above. 
+
+bootFunc <- function(data, i){
+  df <- data[i,] #these are the df we will calculate our statistics of interest
+  m1 <- lm(y_lin ~ sex + age + educ, data=df) #we first estimate the model on the generated datasets
+  c(coef(m1)[2], coef(m1)[3], coef(m1)[4]) #we save our statistics of interest in a vector
+}
+
+b <- boot(df, bootFunc, R = 999) #we feet the boot function our original dataset and our function
+b #names are not very nice. Well, you will manage. 
+
+#boot.ci(b, index=1) #you could ask for the CI
+#summary(margins(m1, vce="bootstrap", iterations=999)) #SE via bootstrapping. Please notice the order of the variabels is messed up. #you could check with if margins gives the same results. Spoiler alert: YES!
+```
+<br> 
+
+Okay, our estimates of the AME and the SE are very close. Our boot function is a lot faster than the function implemented in `margin`. Don't know why. 
+
+## Example 2: Logistic model with interactions
+```{r}
+
+ddlogis <- function(X){-(exp(-X)/(1 + exp(-X))^2 - exp(-X) * (2 * (exp(-X) * (1 + exp(-X))))/((1 +     exp(-X))^2)^2)} #dont forget we need this one as well. 
+
+bootFunc <- function(data, i){
+  df <- data[i,] #bootrap datasets
+  
+  m2_d <- glm(y_di ~ sex + age + educ + sex:educ + age:educ, family=binomial, data=df) #estimate model
+  
+  #retrieve coefficients
+  b_intercept <- coef(m2_d)[1]
+  b_sex <- coef(m2_d)[2]
+  b_age <- coef(m2_d)[3]
+  b_educ <- coef(m2_d)[4]
+  b_sex_educ <- coef(m2_d)[5]
+  b_age_educ <- coef(m2_d)[6]
+  
+  #AME sex
+  newdata_sex0 <- df
+  newdata_sex0$sex <- "men" #use the correct factor levels!!
+  newdata_sex1 <- df
+  newdata_sex1$sex <- "women" #use the correct factor levels!!
+  ME_sex <- plogis(predict(m2_d, newdata=newdata_sex1)) - plogis(predict(m2_d, newdata=newdata_sex0))
+  AME_sex <- mean(ME_sex)
+  
+  #AME age
+  ME_age <- with(df, dlogis(predict(m2_d))*(b_age + b_age_educ*educ))
+  AME_age <- mean(ME_age)
+  
+  #AME educ
+  ME_educ <- with(df, dlogis(predict(m2_d))*(b_educ + b_sex_educ*(as.numeric(sex)-1) + b_age_educ*age)) #make sure sex is numeric as 0, 1
+  AME_educ <- mean(ME_educ)
+
+  #AME interaction effect sex*educ
+  dfxdsex <- with(df, plogis(b_intercept + b_sex*1 + b_age*age + b_educ*educ + b_sex_educ*1*educ + b_age_educ*age*educ) - plogis(b_intercept + b_sex*0 + b_age*age + b_educ*educ + b_sex_educ*0*educ + b_age_educ*age*educ))
+  MEsexeduc  <- with(df, dlogis(b_intercept + b_sex*1 + b_age*age + b_educ*educ + b_sex_educ*1*educ + b_age_educ*age*educ)*(b_educ + b_sex_educ*1 + b_age_educ*age) - dlogis(b_intercept + b_sex*0 + b_age*age + b_educ*educ + b_sex_educ*0*educ + b_age_educ*age*educ)*(b_educ + b_sex_educ*0 + b_age_educ*age))  
+  AMEsexeduc <- mean(MEsexeduc)
+  
+  #AME interaction effect age*educ
+  MEeducage <- with(df2, ddlogis(b_intercept + b_sex*(as.numeric(sex)-1)+ b_age*age + b_educ*educ)*(b_educ + b_age_educ*age)*(b_age + b_age_educ * educ) + dlogis(b_intercept + b_sex*(as.numeric(sex)-1)+ b_age*age + b_educ*educ)*(b_age_educ))
+  AMEeducage <- mean(MEeducage)
+
+  
+  c(AME_sex, AME_age, AME_educ, AMEsexeduc, AMEeducage) #save results
+}
+
+b <- boot(df, bootFunc, R = 999)
+
+b
+
+```
+
+
+
+
+<style>
+.center {
+  text-align: center;
+  color: red;
+}
+</style>
+
+<hr>
+<br>
+<p class="center">Copyright &copy; 2022 Jochem Tolsma</p>
+
